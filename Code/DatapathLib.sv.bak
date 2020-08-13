@@ -1,0 +1,1898 @@
+//This module will hold the cache datapath, basically the arrays need for the structures, the muxs, basically all relevant moduls like in lab6 did
+
+import LC_3B_2s::*;
+module l2DatapathCache(
+input clk,
+input LC_3B_word mem_addr,
+input logic writedata0, writedata1,
+input logic writetag0, writetag1,
+input logic writedirty0, writedirty1,
+input logic inputdirty0, inputdirty1,
+input logic writevalid0, writevalid1,
+input logic writevalid2, writevalid3,
+input logic inputdirty2, inputdirty3,
+input logic writedirty2, writedirty3,
+input logic tag2write, tag3write,
+input logic data2write, data3write,
+input logic pseudoLRU_write,
+input [1:0] mem_byte_enable,
+input logic MUXRW_select,
+input logic stbwritemux_select,
+input cache_line physicalmem_rdata,
+input cache_line l2_mem_wdata,   //Needs to be cache_line l2_mem_wdata
+input logic physicalmemMXselect,
+output cache_line l2_mem_rdata,  //Needs to be cache_line l2_mem_rdata	
+output logic hit,
+output logic [1:0] pseudooutputLRU,
+output logic way0and_out,
+output logic dirtymux_out,
+output cache_line physicalmem_wdata,
+output LC_3B_word physicalmem_addr);
+
+tag_size tag;
+LC_3B_c_index index;
+LC_3B_c_index offset;
+logic offsetlast;
+logic valid;
+
+/* declare internal signals */
+assign tag = mem_addr[15:7];
+assign index = mem_addr[6:4];
+assign offset = mem_addr[3:1];
+assign offsetlast = mem_addr[0];
+assign valid = 1'b1;
+
+/*way 3 signals*/
+tag_size tag3_out;
+logic way3COMPARATOR_TAGX_out;
+logic valid3_out;
+logic way3and_out;
+logic dirty3_out;
+cache_line data3_out;
+
+/*way 2 signals*/
+tag_size tag2_out;
+logic way2COMPARATOR_TAGX_out;
+logic valid2_out;
+logic way2and_out;
+logic dirty2_out;
+cache_line data2_out;
+
+/*way 1 signals */
+logic valid1_out;
+logic dirty1_out;
+tag_size tag1_out;
+cache_line data1_out;
+
+logic way1COMPARATOR_TAGX_out;
+logic way1and_out;
+
+/*way 0 signals*/
+logic valid0_out;
+logic dirty0_out;
+tag_size tag0_out;
+cache_line data0_out;
+
+
+logic way0COMPARATOR_TAGX_out;
+
+/*combined way  signals*/
+cache_line datamux_out;
+logic LRUmux_out;
+LC_3B_byte memrdatasplitmux_out;
+LC_3B_byte memwdatasplitmux_out;
+LC_3B_word stbwritemux_out;
+LC_3B_word splitconcat_out;
+cache_line cache_lineconcat_out;
+cache_line MUXRW_out;
+tag_size tagmux_out;
+
+/*combined way logic*/
+fourinOR hitcheck
+(
+	.a(way0and_out),
+	.b(way1and_out),
+	.c(way2and_out),
+	.d(way3and_out),
+	.o(hit)
+);
+
+
+/*arraycreaTOR #(.width(1)) LRU
+(
+	.clk,
+	.write(LRU_write),
+	.index(index),
+	.datain(LRU_in),
+	.dataout(outputLRU)
+);*/
+
+pseudoLRU pseudoLRU
+(
+	.clk,
+	.pseudoLRU_write(pseudoLRU_write),
+	.out0(valid0_out),
+	.out1(valid1_out),
+	.out2(valid2_out),
+	.out3(valid3_out),
+	.LRU(pseudooutputLRU)
+);
+
+fourtoonemux #(.width(128)) evictdatamux
+(
+    .select(pseudooutputLRU),
+	 .a(data0_out),
+	 .b(data1_out),
+	 .c(data2_out),
+	 .d(data3_out),
+	 .o(physicalmem_wdata)
+);
+
+fourtoonemux #(.width(9)) tagmux
+(
+    .select(pseudooutputLRU),
+	 .a(tag0_out),
+	 .b(tag1_out),
+	 .c(tag2_out),
+	 .d(tag3_out),
+	 .o(tagmux_out)
+);
+
+twotoonemux #(.width(16)) physicalmemmux
+(
+    .select(physicalmemMXselect),
+	 .a(mem_addr),
+	 .b({tagmux_out,index,4'b0000}),
+	 .o(physicalmem_addr)
+);
+
+fourtoonemux #(.width(1)) dirtymux
+(
+    .select(pseudooutputLRU),
+	 .a(dirty0_out),
+	 .b(dirty1_out),
+	 .c(dirty2_out),
+	 .d(dirty3_out),
+	 .o(dirtymux_out)
+);
+
+//Mem RDATA mux not REQ for L2Cache
+
+assign l2_mem_rdata = datamux_out;
+
+logic [1:0] datamux_select;
+
+always_comb
+begin
+	if(way0and_out)
+		datamux_select = 2'b00;
+	else if(way1and_out)
+		datamux_select = 2'b01;
+	else if(way2and_out)
+		datamux_select = 2'b10;
+	else if(way3and_out)
+		datamux_select = 2'b11;
+	else
+		datamux_select = 2'b00;
+end
+
+fourtoonemux #(.width(128)) datamux
+(
+    .select(datamux_select),
+	 .a(data0_out),
+	 .b(data1_out),
+	 .c(data2_out),
+	 .d(data3_out),
+	 .o(datamux_out)
+);
+
+twotoonemux #(.width(128)) MUXRW
+(
+    .select(MUXRW_select),
+	 .a(physicalmem_rdata),
+	 .b(l2_mem_wdata),
+	 .o(MUXRW_out)
+);
+
+
+/* Way 3 logic*/
+COMPARATOR_TAGX way3COMPARATOR_TAGX
+(
+	.inputCache(tag),
+	.mem_addr_in(tag3_out),
+	.out(way3COMPARATOR_TAGX_out)
+);
+
+twoinAND way3and
+(
+	.a(valid3_out),
+	.b(way3COMPARATOR_TAGX_out),
+	.o(way3and_out)
+);
+
+/*Way 3 arraycreaTORs begin*/
+arraycreaTOR #(.width(1)) valid3
+(
+	.clk,
+	.write(writevalid3),
+	.index(index),
+	.datain(valid),
+	.dataout(valid3_out)
+);
+
+arraycreaTOR #(.width(1)) dirty3
+(
+	.clk,
+	.write(writedirty3),
+	.index(index),
+	.datain(inputdirty3),
+	.dataout(dirty3_out)
+);
+
+
+arraycreaTOR #(.width(9)) tag3
+(
+	.clk,
+	.write(tag3write),
+	.index(index),
+	.datain(tag),
+	.dataout(tag3_out)
+);
+
+arraycreaTOR data3
+(
+	.clk,
+   .write(data3write),
+   .index(index),
+   .datain(MUXRW_out),
+   .dataout(data3_out)
+);
+
+
+/* Way 2 logic*/
+COMPARATOR_TAGX way2COMPARATOR_TAGX
+(
+	.inputCache(tag),
+	.mem_addr_in(tag2_out),
+	.out(way2COMPARATOR_TAGX_out)
+);
+
+twoinAND way2and
+(
+	.a(valid2_out),
+	.b(way2COMPARATOR_TAGX_out),
+	.o(way2and_out)
+);
+
+/*Way 2 arraycreaTORs begin*/
+arraycreaTOR #(.width(1)) valid2
+(
+	.clk,
+	.write(writevalid2),
+	.index(index),
+	.datain(valid),
+	.dataout(valid2_out)
+);
+
+arraycreaTOR #(.width(1)) dirty2
+(
+	.clk,
+	.write(writedirty2),
+	.index(index),
+	.datain(inputdirty2),
+	.dataout(dirty2_out)
+);
+
+
+arraycreaTOR #(.width(9)) tag2
+(
+	.clk,
+	.write(tag2write),
+	.index(index),
+	.datain(tag),
+	.dataout(tag2_out)
+);
+
+arraycreaTOR data2
+(
+	.clk,
+   .write(data2write),
+   .index(index),
+   .datain(MUXRW_out),
+   .dataout(data2_out)
+);
+
+
+/* Way 1 logic*/
+COMPARATOR_TAGX way1COMPARATOR_TAGX
+(
+	.inputCache(tag),
+	.mem_addr_in(tag1_out),
+	.out(way1COMPARATOR_TAGX_out)
+);
+
+twoinAND way1and
+(
+	.a(valid1_out),
+	.b(way1COMPARATOR_TAGX_out),
+	.o(way1and_out)
+);
+
+/*Way 1 arraycreaTORs begin*/
+arraycreaTOR #(.width(1)) valid1
+(
+	.clk,
+	.write(writevalid1),
+	.index(index),
+	.datain(valid),
+	.dataout(valid1_out)
+);
+
+arraycreaTOR #(.width(1)) dirty1
+(
+	.clk,
+	.write(writedirty1),
+	.index(index),
+	.datain(inputdirty1),
+	.dataout(dirty1_out)
+);
+
+
+arraycreaTOR #(.width(9)) tag1
+(
+	.clk,
+	.write(writetag1),
+	.index(index),
+	.datain(tag),
+	.dataout(tag1_out)
+);
+
+arraycreaTOR data1
+(
+	.clk,
+   .write(writedata1),
+   .index(index),
+   .datain(MUXRW_out),
+   .dataout(data1_out)
+);
+
+
+/*Way 0 logic*/
+COMPARATOR_TAGX way0COMPARATOR_TAGX
+(
+	.inputCache(tag),
+	.mem_addr_in(tag0_out),
+	.out(way0COMPARATOR_TAGX_out)
+);
+
+twoinAND way0and
+(
+	.a(valid0_out),
+	.b(way0COMPARATOR_TAGX_out),
+	.o(way0and_out)
+);
+
+
+/*Way 0 arraycreaTORs begin */
+arraycreaTOR #(.width(1)) valid0
+(
+	.clk,
+	.write(writevalid0),
+	.index(index),
+	.datain(valid),
+	.dataout(valid0_out)
+);
+
+arraycreaTOR #(.width(1)) dirty0
+(
+	.clk,
+	.write(writedirty0),
+	.index(index),
+	.datain(inputdirty0),
+	.dataout(dirty0_out)
+);
+
+
+arraycreaTOR #(.width(9)) tag0
+(
+	.clk,
+	.write(writetag0),
+	.index(index),
+	.datain(tag),
+	.dataout(tag0_out)
+);
+
+arraycreaTOR data0
+(
+	.clk,
+   .write(writedata0),
+   .index(index),
+   .datain(MUXRW_out),
+   .dataout(data0_out)
+);
+endmodule
+
+
+/* The datapath for the arbiter*/
+
+
+import LC_3B_2s::*;
+
+module datapath_arbiter
+(
+    input clk,
+	 /*inputs from cpu*/
+    input logic internal_mem_read,
+	 input logic internal_mem_write,
+	 input LC_3B_word internal_mem_addr,
+	 input cache_line internal_mem_wdata,
+	 input logic d_mem_read,
+	 input logic d_mem_write,
+	 input LC_3B_word d_mem_addr,
+	 input cache_line d_mem_wdata, 
+	 input cache_line l2_mem_rdata,
+	 input logic l2_mem_response,
+	 input logic[1:0] d_mem_byte_enable,
+	 input logic[1:0] internal_mem_byte_enable,
+	 //From arbiter control
+	 input logic readsignalmux_select,
+	 input logic writesignalmux_select,
+	 input logic memaddrmux_select,
+	 input logic memwdatamux_select,
+	 input logic memrdatademux_select,
+	 input logic memresponsemux_select,
+	 input logic byteenablemux_select,
+	 
+	 output logic arbiter_internal_mem_response,
+	 output logic arbiter_d_mem_response,
+	 output cache_line arbiter_d_mem_rdata,
+	 output cache_line arbiter_internal_mem_rdata,
+	 output cache_line arbiter_mem_wdata,
+	 output logic arbiter_mem_write,
+	 output logic arbiter_mem_read,
+	 output logic[1:0] arbiter_physicalmem_byte_enable,
+	 output LC_3B_word arbiter_mem_addr
+);
+
+
+twotoonemux #(.width(1)) readsignalmux
+(
+    .select(readsignalmux_select),
+	 .a(d_mem_read),
+	 .b(internal_mem_read),
+	 .o(arbiter_mem_read)
+);
+
+twotoonemux #(.width(2)) byteenablemux
+(
+	.select(byteenablemux_select),
+	.a(d_mem_byte_enable),
+	.b(internal_mem_byte_enable),
+	.o(arbiter_physicalmem_byte_enable)
+);
+
+twotoonemux #(.width(1)) writesignalmux
+(
+    .select(writesignalmux_select),
+	 .a(d_mem_write),
+	 .b(internal_mem_write),
+	 .o(arbiter_mem_write)
+);
+
+twotoonemux memaddrmux
+(
+	.select(memaddrmux_select),
+	.a(d_mem_addr),
+	.b(internal_mem_addr),
+	.o(arbiter_mem_addr)
+);
+
+twotoonemux #(.width(128)) memwdatamux
+(
+	.select(memwdatamux_select),
+	.a(d_mem_wdata),
+	.b(internal_mem_wdata),
+	.o(arbiter_mem_wdata)
+);
+
+one_two_decoder #(.width(128)) memrdatademux
+(
+	.select(memrdatademux_select),
+	.in(l2_mem_rdata),
+	.Aout(arbiter_d_mem_rdata),
+	.Bout(arbiter_internal_mem_rdata)
+);
+
+one_two_decoder #(.width(1)) memresponsemux
+(
+	.select(memresponsemux_select),
+	.in(l2_mem_response),
+	.Aout(arbiter_d_mem_response),
+	.Bout(arbiter_internal_mem_response)
+);
+
+
+endmodule
+
+
+// L1Cache datapath
+
+/* cache datapath -- contains the data arraycreaTOR, valid arraycreaTOR, dirty arraycreaTOR, tag arraycreaTOR, LRU arraycreaTOR, comparators, muxes, logic gates, and so on. */
+
+import LC_3B_2s::*;
+
+module DatapathCache
+(
+    input clk,
+	 /*inputs from cpu*/
+	 input LC_3B_word mem_addr,
+	 input logic writedata0, writedata1,
+	 input logic writetag0, writetag1,
+	 input logic writedirty0, writedirty1,
+	 input logic inputdirty0, inputdirty1,
+	 input logic writevalid0, writevalid1,
+	 input logic LRU_in,
+	 input logic LRU_write,
+	 input [1:0] mem_byte_enable,
+	 input logic MUXRW_select,
+	 input logic stbwritemux_select,
+	 input cache_line physicalmem_rdata,
+	 input LC_3B_word mem_wdata,
+	 input logic physicalmemMXselect,
+	 output LC_3B_word mem_rdata,
+
+    output logic hit,
+	 output logic outputLRU,
+	 output logic way0and_out,
+	 output logic dirtymux_out,
+	 output cache_line physicalmem_wdata,
+	 output LC_3B_word physicalmem_addr
+);
+
+tag_size tag;
+LC_3B_c_index index;
+LC_3B_c_index offset;
+logic offsetlast;
+logic valid;
+
+/* declare internal signals */
+assign tag = mem_addr[15:7];
+assign index = mem_addr[6:4];
+assign offset = mem_addr[3:1];
+assign offsetlast = mem_addr[0];
+assign valid = 1'b1;
+
+
+/*way 1 signals */
+logic valid1_out;
+logic dirty1_out;
+tag_size tag1_out;
+cache_line data1_out;
+
+logic way1COMPARATOR_TAGX_out;
+logic way1and_out;
+
+/*way 0 signals*/
+logic valid0_out;
+logic dirty0_out;
+tag_size tag0_out;
+cache_line data0_out;
+
+
+logic way0COMPARATOR_TAGX_out;
+
+/*combined way  signals*/
+cache_line datamux_out;
+logic LRUmux_out;
+LC_3B_byte memrdatasplitmux_out;
+LC_3B_byte memwdatasplitmux_out;
+LC_3B_word stbwritemux_out;
+LC_3B_word splitconcat_out;
+cache_line cache_lineconcat_out;
+cache_line MUXRW_out;
+tag_size tagmux_out;
+
+/*combined way logic*/
+twoinOR hitcheck
+(
+	.a(way0and_out),
+	.b(way1and_out),
+	.o(hit)
+);
+
+
+arraycreaTOR #(.width(1)) LRU
+(
+	.clk,
+	.write(LRU_write),
+	.index(index),
+	.datain(LRU_in),
+	.dataout(outputLRU)
+);
+
+twotoonemux #(.width(128)) evictdatamux
+(
+    .select(outputLRU),
+	 .a(data0_out),
+	 .b(data1_out),
+	 .o(physicalmem_wdata)
+);
+
+twotoonemux #(.width(9)) tagmux
+(
+    .select(outputLRU),
+	 .a(tag0_out),
+	 .b(tag1_out),
+	 .o(tagmux_out)
+);
+
+twotoonemux #(.width(16)) physicalmemmux
+(
+    .select(physicalmemMXselect),
+	 .a(mem_addr),
+	 .b({tagmux_out,index,4'b0000}),
+	 .o(physicalmem_addr)
+);
+
+twotoonemux #(.width(1)) dirtymux
+(
+    .select(outputLRU),
+	 .a(dirty0_out),
+	 .b(dirty1_out),
+	 .o(dirtymux_out)
+);
+
+eight_one_mux memrdatamux
+(
+	.select(offset),
+	.a(datamux_out[15:0]),
+	.b(datamux_out[31:16]),
+	.c(datamux_out[47:32]),
+	.d(datamux_out[63:48]),
+	.e(datamux_out[79:64]),
+	.f(datamux_out[95:80]),
+	.g(datamux_out[111:96]),
+	.h(datamux_out[127:112]),
+	.out(mem_rdata)
+);
+
+CONCATENATOR_MUX cache_lineconcat
+(
+	.data_r(datamux_out),
+	.data_wr(stbwritemux_out),
+	.select(offset),
+	.out(cache_lineconcat_out)
+);
+
+twotoonemux #(.width(128)) datamux
+(
+    .select(way1and_out),
+	 .a(data0_out),
+	 .b(data1_out),
+	 .o(datamux_out)
+);
+
+twotoonemux #(.width(128)) MUXRW
+(
+    .select(MUXRW_select),
+	 .a(physicalmem_rdata),
+	 .b(cache_lineconcat_out),
+	 .o(MUXRW_out)
+);
+
+
+twotoonemux #(.width(8)) memwdatasplitmux
+(
+    .select(mem_byte_enable[1]),
+	 .a(mem_wdata[7:0]),
+	 .b(mem_wdata[15:8]),
+	 .o(memwdatasplitmux_out)
+);
+
+twotoonemux #(.width(8)) memrdatasplitmux
+(
+    .select(mem_byte_enable[0]),
+	 .a(mem_rdata[7:0]),
+	 .b(mem_rdata[15:8]),
+	 .o(memrdatasplitmux_out)
+);
+
+twotoonemux #(.width(16)) stbwritemux
+(
+    .select(stbwritemux_select),
+	 .a(mem_wdata),
+	 .b(splitconcat_out),
+	 .o(stbwritemux_out)
+);
+
+CONCATENATORDOSMX splitconcat
+(
+	.a(memrdatasplitmux_out),
+	.b(memwdatasplitmux_out),
+	.select(mem_byte_enable[1]),
+	.out(splitconcat_out)
+
+);
+
+/* Way 1 logic*/
+COMPARATOR_TAGX way1COMPARATOR_TAGX
+(
+	.inputCache(tag),
+	.mem_addr_in(tag1_out),
+	.out(way1COMPARATOR_TAGX_out)
+);
+
+twoinAND way1and
+(
+	.a(valid1_out),
+	.b(way1COMPARATOR_TAGX_out),
+	.o(way1and_out)
+);
+
+/*Way 1 arraycreaTORs begin*/
+arraycreaTOR #(.width(1)) valid1
+(
+	.clk,
+	.write(writevalid1),
+	.index(index),
+	.datain(valid),
+	.dataout(valid1_out)
+);
+
+arraycreaTOR #(.width(1)) dirty1
+(
+	.clk,
+	.write(writedirty1),
+	.index(index),
+	.datain(inputdirty1),
+	.dataout(dirty1_out)
+);
+
+
+arraycreaTOR #(.width(9)) tag1
+(
+	.clk,
+	.write(writetag1),
+	.index(index),
+	.datain(tag),
+	.dataout(tag1_out)
+);
+
+arraycreaTOR data1
+(
+	.clk,
+   .write(writedata1),
+   .index(index),
+   .datain(MUXRW_out),
+   .dataout(data1_out)
+);
+
+
+/*Way 0 logic*/
+COMPARATOR_TAGX way0COMPARATOR_TAGX
+(
+	.inputCache(tag),
+	.mem_addr_in(tag0_out),
+	.out(way0COMPARATOR_TAGX_out)
+);
+
+twoinAND way0and
+(
+	.a(valid0_out),
+	.b(way0COMPARATOR_TAGX_out),
+	.o(way0and_out)
+);
+
+
+/*Way 0 arraycreaTORs begin */
+arraycreaTOR #(.width(1)) valid0
+(
+	.clk,
+	.write(writevalid0),
+	.index(index),
+	.datain(valid),
+	.dataout(valid0_out)
+);
+
+arraycreaTOR #(.width(1)) dirty0
+(
+	.clk,
+	.write(writedirty0),
+	.index(index),
+	.datain(inputdirty0),
+	.dataout(dirty0_out)
+);
+
+
+arraycreaTOR #(.width(9)) tag0
+(
+	.clk,
+	.write(writetag0),
+	.index(index),
+	.datain(tag),
+	.dataout(tag0_out)
+);
+
+arraycreaTOR data0
+(
+	.clk,
+   .write(writedata0),
+   .index(index),
+   .datain(MUXRW_out),
+   .dataout(data0_out)
+);
+endmodule
+
+
+//main datapath for lc3b
+
+/*the datapath*/
+import LC_3B_2s::*;
+
+module cpu_datapath
+(
+	input clk,
+	input logic internal_mem_response,
+	input LC_3B_word internal_mem_rdata,
+	input logic d_mem_response,
+	input LC_3B_word d_mem_rdata,
+	input logic DCache_hit,
+	input logic idle_state,
+	output LC_3B_word internal_mem_addr,
+	output LC_3B_word internal_mem_wdata,
+	output logic internal_mem_read,
+	output logic internal_mem_write,
+	output logic [1:0]internal_mem_byte_enable,
+	output LC_3B_word d_mem_addr,
+	output LC_3B_word d_mem_wdata,
+	output logic d_mem_read,
+	output logic d_mem_write,
+	output logic DCache_enable,
+	output logic [1:0] d_mem_byte_enable,
+	output logic TRUE_BR
+
+);
+
+
+//Internal Signals
+
+	//Fetch Signals
+		logic [1:0] PCmux_select;
+		logic load_PC;
+		LC_3B_word PC_twoadd_out;
+		LC_3B_word PC_out;
+		LC_3B_word PCmux_out;
+	//Fetch-Decode Signals
+		logic if_id_v_out;
+		logic load_if_id;
+		LC_3B_word if_id_PC_out;
+		LC_3B_word if_id_ir_out;
+		logic if_id_v_in;
+	//Decode Signals
+		LC_3B_reg storemux_out;
+		LC_3B_word sr1_out;
+		LC_3B_word sr2_out;
+		LC_3B_reg cc_out;
+		LC_3B_control_word control_store;
+		logic stallhazard;
+		logic flushpipe;
+	//Decode - Execute Signals
+		LC_3B_word id_ex_PC_out;
+		LC_3B_word id_ex_ir_out;
+		LC_3B_word SR1_ID_EX_out;
+		LC_3B_word SR2_ID_EX_out;
+		LC_3B_reg id_ex_cc_out;
+		LC_3B_reg out_ID_EX_out;
+		logic id_ex_v_out;
+		logic load_id_ex;
+		logic ISVAL_ID_EX_out;
+		LC_3B_control_word id_ex_cs_out;
+		logic id_ex_v_in;
+		LC_3B_reg Destination_mux_out;
+		LC_3B_reg id_ex_src1_out;
+		LC_3B_reg id_ex_src2_out;
+	//Execute signals
+		LC_3B_word SEXT5_out;
+		LC_3B_word SEXT6_out;
+		LC_3B_word SEXT9_out;
+		LC_3B_word SEXT11_out;
+		LC_3B_word addr2mux_out;
+		LC_3B_word LeftSHIFTone_out;
+		LC_3B_word addr1mux_out;
+		LC_3B_word addr3mux_out;
+		LC_3B_word zextLeftSHIFT_out;
+		LC_3B_word addradder_out;
+		LC_3B_word sr2mux_out;
+		LC_3B_word Alu_out;
+		LC_3B_word ShiftBlock_out;
+		LC_3B_word Alu_result_mux_out;
+		LC_3B_word forwardmux1_out;
+		LC_3B_word forwardtwotoonemux_out;
+		logic [1:0] selectFM1;
+		logic [1:0] selectFM2;
+	//Execute-memory signals
+		logic load_ex_mem;
+		LC_3B_word ex_mem_addr_out;
+		LC_3B_control_word ex_mem_cs_out;
+		LC_3B_word ex_mem_ir_out;
+		LC_3B_reg ex_mem_cc_out;
+		LC_3B_word ex_mem_PC_out;
+		LC_3B_reg ex_mem_Destination_out;
+		logic uncond_or_trap;
+		logic ex_mem_v_out;
+		LC_3B_word ex_mem_Aluresult_out;
+		logic ex_mem_v_in;
+		LC_3B_reg ex_mem_src1_out;
+		LC_3B_reg ex_mem_src2_out;
+	//Memory signals
+		LC_3B_word mem_target;
+		LC_3B_word mem_trap;
+		logic CondCodeComp_out;
+		logic STALL_DCache;
+		logic jsr_taken;
+		logic trap_taken;
+		LC_3B_word DCacheaddrmux_out;
+		logic DCacheaddrmux_select;
+		logic STALL_LDI;
+		logic [1:0] ldisticountererout;
+		LC_3B_word HBzext_out;
+		LC_3B_word LBzext_out;
+		LC_3B_word DCachemux_out;
+		LC_3B_word DCachetwotoonemux_out;
+		LC_3B_word ZEXTblock_out;
+		LC_3B_word write_DCacheritemux_out;
+		logic andWE0_out;
+		logic andWE1_out;
+		logic andWE_select_out;
+		logic WE0;
+		logic WE1;
+		logic mem_wb_data_mux_select;
+		LC_3B_word mem_wb_data_mux_out;
+		LC_3B_word ldistireg_out;
+		logic load_ldistireg;
+		logic DCacheRmux_select;
+		logic write_DCachemux_select;
+		logic DCacheRmux_out;
+		logic write_DCachemux_out;
+		logic CondCodeCompmux_select;
+		logic wbCondCodeComp_out;
+		logic CondCodeCompmux_out;
+		LC_3B_reg wbCondCode_out;
+	//Memory-wb signals
+		logic load_mem_wb;
+		LC_3B_word mem_wb_addr_out;
+		LC_3B_word mem_wb_data_out;
+		LC_3B_word mem_wb_PC_out;
+		LC_3B_control_word mem_wb_cs_out;
+		LC_3B_word mem_wb_Aluresult_out;
+		LC_3B_word mem_wb_ir_out;
+		LC_3B_reg mem_wb_Destination_out;
+		logic mem_wb_v_out;
+		logic mem_wb_v_in;
+		LC_3B_reg mem_wb_src1_out;
+		LC_3B_reg mem_wb_src2_out;
+	//wb signals
+		LC_3B_word wbmux_out;
+		LC_3B_reg wb_cc_data;
+		logic wb_LD_CC;
+		logic wb_registerload;
+
+//End Internal Signals
+
+//Fetch Stage Components
+
+assign internal_mem_addr = PC_out;
+assign internal_mem_wdata = 16'b0000000000000000;
+assign internal_mem_read = 1'b1;
+assign internal_mem_byte_enable = 2'b11;
+assign internal_mem_write = 1'b0;
+//assign load_PC = internal_mem_response & !STALL_DCache & !STALL_LDI & !stallhazard;
+assign load_if_id = internal_mem_response & !STALL_DCache & !stallhazard;
+
+always_comb
+begin
+	if(internal_mem_response)
+		load_PC = internal_mem_response & !STALL_DCache & !STALL_LDI & !stallhazard;
+	else if(!internal_mem_response && TRUE_BR && (mem_target == 16'b0000001011000110))
+		load_PC =  1;
+	else if(!internal_mem_response && ex_mem_cs_out.OPJMP &&(ex_mem_Aluresult_out == 16'b0000001101100010))
+		load_PC = 1;
+	else
+		load_PC = internal_mem_response & !STALL_DCache & !STALL_LDI & !stallhazard;
+end
+
+fourtoonemux PCmux
+(
+	.select(PCmux_select),
+	.a(PC_twoadd_out),
+	.b(mem_target),										
+	.c(mem_trap),  										
+	.d(ex_mem_Aluresult_out), 								
+	.o(PCmux_out)
+);
+
+twoadd PC_twoadd
+(
+	.in(PC_out),
+	.out(PC_twoadd_out)
+);
+
+register PC
+(
+	.clk,
+	.load(load_PC),
+	.in(PCmux_out),
+	.out(PC_out)
+);
+
+//End Fetch Stage Components
+
+//Fetch - Decode Pipe Components
+register if_id_PC
+(
+	.clk,
+	.load(load_if_id),
+	.in(PC_twoadd_out),
+	.out(if_id_PC_out)
+);
+
+register if_id_ir
+(
+	.clk,
+	.load(load_if_id),
+	.in(internal_mem_rdata),
+	.out(if_id_ir_out)
+);
+
+register #(.width(1)) if_id_v
+(
+	.clk,
+	.load(load_if_id),
+	.in(if_id_v_in),
+	.out(if_id_v_out)
+);
+//End Fetch - Decode Pipe Components
+
+//Decode Stage Components
+hazard_detection hazard_detection
+(
+	.DCacheR(id_ex_cs_out.DCacheR),
+	.DRM_ID_EX(out_ID_EX_out),
+	.IF_ID_A(if_id_ir_out[8:6]),
+	.IF_ID_B(if_id_ir_out[2:0]),
+	.SDR_IF_ID(if_id_ir_out[11:9]),
+	.write_DCache(control_store.write_DCache),
+	.ID_EX_AREQ(id_ex_cs_out.REQSR1),
+	.ID_EX_BREQ(id_ex_cs_out.REQSR2),
+	.OPUNCO(ex_mem_cs_out.OPUNCO),
+	.flushpipe(flushpipe),
+	.stallhazard(stallhazard)
+);
+
+controlla controlla
+(
+	.OPCode(LC_3B_OPCode'(if_id_ir_out[15:12])),
+	.IR5(if_id_ir_out[5]),
+	.IR11(if_id_ir_out[11]),
+	.PC(if_id_PC_out),
+	.control(control_store)
+);
+
+twotoonemux #(.width(3)) storemux
+(
+	.select(control_store.storemux_select),
+	.a(if_id_ir_out[2:0]),
+	.b(if_id_ir_out[11:9]),
+	.o(storemux_out)
+);
+
+REGFILE REGFILE
+(
+	.clk,
+	.load(wb_registerload),
+	.in(wbmux_out), //From wb stage
+	.AREF(if_id_ir_out[8:6]),
+	.BREF(storemux_out),
+	.Destination(mem_wb_Destination_out), //From wb stage
+	.reg_a(sr1_out),
+	.reg_b(sr2_out)
+);
+
+register #(.width(3)) cc
+(
+	.clk,
+	.load(wb_LD_CC), //From Wb stage
+	.in(wb_cc_data),  //From wb stage
+	.out(cc_out)
+);
+
+
+
+
+twotoonemux #(.width(3)) Destination_mux
+(
+	.select(control_store.Destination_mux_select),
+	.a(if_id_ir_out[11:9]),
+	.b(3'b111), //hardcode 111
+	.o(Destination_mux_out)
+);
+
+//End Decode Stage Components
+
+//Decode - Execute Pipe Components
+assign load_id_ex = ISVAL_ID_EX_out;
+
+
+ISVAL_ID_EX ISVAL_ID_EX
+(
+	.clk,
+	.internal_mem_response(internal_mem_response),
+	.STALL_DCache(STALL_DCache),
+	.STALL_LDI(STALL_LDI),
+	.TRUE_BR(TRUE_BR),
+	.out(ISVAL_ID_EX_out)
+);
+
+register id_ex_PC
+(
+	.clk,
+	.load(load_id_ex),
+	.in(if_id_PC_out),
+	.out(id_ex_PC_out)
+);
+
+contrsigreg id_ex_cs
+(
+	.clk,
+	.load(load_id_ex),
+	.in(control_store),
+	.out(id_ex_cs_out)
+);
+
+register SR1_ID_EX
+(
+	.clk,
+	.load(load_id_ex),
+	.in(sr1_out),
+	.out(SR1_ID_EX_out)
+);
+
+register SR2_ID_EX
+(
+	.clk,
+	.load(load_id_ex),
+	.in(sr2_out),
+	.out(SR2_ID_EX_out)
+);
+
+register id_ex_ir
+(
+	.clk,
+	.load(load_id_ex),
+	.in(if_id_ir_out),
+	.out(id_ex_ir_out)
+);
+
+register #(.width(3)) id_ex_cc
+(
+	.clk,
+	.load(load_id_ex),
+	.in(cc_out),
+	.out(id_ex_cc_out)
+);
+
+register #(.width(3)) out_ID_EX
+(
+	.clk,
+	.load(load_id_ex),
+	.in(Destination_mux_out),
+	.out(out_ID_EX_out)
+);
+
+register #(.width(3)) id_ex_src1
+(
+	.clk,
+	.load(load_id_ex),
+	.in(if_id_ir_out[8:6]),
+	.out(id_ex_src1_out)
+);
+
+register #(.width(3)) id_ex_src2
+(
+	.clk,
+	.load(load_id_ex),
+	.in(storemux_out),
+	.out(id_ex_src2_out)
+);
+
+register #(.width(1)) id_ex_v
+(
+	.clk,
+	.load(ISVAL_ID_EX_out),
+	.in(id_ex_v_in),
+	.out(id_ex_v_out)
+);
+
+//End Decode - Execute pipe components
+
+//Execute Stage Components
+SEXT #(.width(6)) SEXT6
+(
+	.in(id_ex_ir_out[5:0]),
+	.out(SEXT6_out)
+);
+
+SEXT #(.width(9)) SEXT9
+(
+	.in(id_ex_ir_out[8:0]),
+	.out(SEXT9_out)
+);
+
+SEXT #(.width(5)) SEXT5
+(
+	.in(id_ex_ir_out[4:0]),
+	.out(SEXT5_out)
+);
+
+SEXT #(.width(11)) SEXT11
+(
+	.in(id_ex_ir_out[10:0]),
+	.out(SEXT11_out)
+
+
+);
+
+LeftSHIFTone LeftSHIFTone
+(
+	.select(id_ex_cs_out.LeftSHIFT),
+	.in(addr2mux_out),
+	.out(LeftSHIFTone_out)
+);
+
+twotoonemux addr1mux
+(
+	.select(id_ex_cs_out.addr1mux_select),
+	.a(id_ex_PC_out),
+	.b(SR1_ID_EX_out),
+	.o(addr1mux_out)
+);
+
+fourtoonemux addr2mux
+(
+	.select(id_ex_cs_out.addr2mux_select),
+	.a(16'b0000000000000000),
+	.b(SEXT6_out),
+	.c(SEXT9_out),
+	.d(SEXT11_out), 
+	.o(addr2mux_out)
+);
+
+adderst addradder
+(
+	.a(addr1mux_out),
+	.b(LeftSHIFTone_out),
+	.out(addradder_out)
+);
+
+twotoonemux sr2mux
+(
+	.select(id_ex_cs_out.sr2mux_select),
+	.a(SR2_ID_EX_out),
+	.b(SEXT5_out),
+	.o(sr2mux_out)
+);
+
+Alu Alu
+(
+	.OPAlu(id_ex_cs_out.OPAlu),
+	.a(forwardmux1_out),
+	.b(forwardtwotoonemux_out),
+	.f(Alu_out)
+);
+
+
+ShiftBlock ShiftBlock
+(
+	.in(forwardmux1_out),
+	.shiftword(id_ex_ir_out[5:0]),
+	.out(ShiftBlock_out)
+);
+
+twotoonemux Alu_result_mux
+(
+	.select(id_ex_cs_out.Alu_result_mux_select),
+	.a(Alu_out), //default 0 for just Alu_out
+	.b(ShiftBlock_out), // 1 for when we shift
+	.o(Alu_result_mux_out)
+
+);
+
+LeftShift_ZEXT zextLeftSHIFT
+(
+	.in(id_ex_ir_out[7:0]),
+	.out(zextLeftSHIFT_out)
+
+);
+
+twotoonemux addr3mux
+(
+	.select(id_ex_cs_out.addr3mux_select),
+	.a(addradder_out),
+	.b(zextLeftSHIFT_out),
+	.o(addr3mux_out)
+
+);
+
+
+/*begin data forwarding*/
+
+forwardselectunit forwardselectunit
+(
+	.clk,
+	.registerload(id_ex_cs_out.registerload),
+	.DRM_EX_MEM(ex_mem_Destination_out),
+	.DRM_MEM_WB(mem_wb_Destination_out),
+	.out_ID_EX(out_ID_EX_out),
+	.SR1_ID_EX(id_ex_src1_out),
+	.SR2_ID_EX(id_ex_src2_out),
+	.ID_EX_AREQ(id_ex_cs_out.REQSR1),
+	.ID_EX_BREQ(id_ex_cs_out.REQSR2),
+	.DRM_ID_EX_REQ(id_ex_cs_out.dr_REQ),
+	.SR1_EX_MEM_REQ(ex_mem_cs_out.REQSR1),
+	.SR2_EX_MEM_REQ(ex_mem_cs_out.REQSR2),
+	.DRM_EX_MEM_REQ(ex_mem_cs_out.dr_REQ),
+	.SR1_MEM_WB_REQ(mem_wb_cs_out.REQSR1),
+	.SR2_MEM_WB_REQ(mem_wb_cs_out.REQSR2),
+	.DRM_MEM_WB_REQ(mem_wb_cs_out.dr_REQ),
+	.ex_mem_v(ex_mem_v_out),
+	.mem_wb_v(mem_wb_v_out),
+	.selectFM1(selectFM1),
+	.selectFM2(selectFM2)
+);
+
+fourtoonemux forwardmux1
+(
+	.select(selectFM1),
+	.a(SR1_ID_EX_out),
+	.b(wbmux_out),
+	.c(ex_mem_Aluresult_out),
+	.d(ex_mem_addr_out),
+	.o(forwardmux1_out)
+
+);
+
+threetoonemux forwardtwotoonemux
+(
+	.select(selectFM2),
+	.a(sr2mux_out),
+	.b(wbmux_out),
+	.c(ex_mem_Aluresult_out),
+	.o(forwardtwotoonemux_out)
+
+);
+/*end data forwarding */
+
+//End Execute Stage components
+
+//Execute-Memory Pipe Components
+assign load_ex_mem = !STALL_DCache & !STALL_LDI;
+
+
+register ex_mem_addr
+(
+	.clk,
+	.load(load_ex_mem),
+	.in(addr3mux_out),
+	.out(ex_mem_addr_out)
+);
+
+contrsigreg ex_mem_cs
+(
+	.clk,
+	.load(load_ex_mem),
+	.in(id_ex_cs_out),
+	.out(ex_mem_cs_out)
+);
+
+register ex_mem_ir
+(
+	.clk,
+	.load(load_ex_mem),
+	.in(id_ex_ir_out),
+	.out(ex_mem_ir_out)
+);
+
+register #(.width(3)) ex_mem_cc
+(
+	.clk,
+	.load(load_ex_mem),
+	.in(id_ex_cc_out),
+	.out(ex_mem_cc_out)
+);
+
+register ex_mem_PC
+(
+	.clk,
+	.load(load_ex_mem),
+	.in(id_ex_PC_out),
+	.out(ex_mem_PC_out)
+);
+
+
+register ex_mem_Aluresult
+(
+	.clk,
+	.load(load_ex_mem),
+	.in(Alu_result_mux_out),
+	.out(ex_mem_Aluresult_out)
+);
+
+register #(.width(3)) ex_mem_Destination
+(
+	.clk,
+	.load(load_ex_mem),
+	.in(out_ID_EX_out),
+	.out(ex_mem_Destination_out)
+);
+
+register #(.width(3)) ex_mem_src1
+(
+	.clk,
+	.load(load_ex_mem),
+	.in(id_ex_src1_out),
+	.out(ex_mem_src1_out)
+);
+
+register #(.width(3)) ex_mem_src2
+(
+	.clk,
+	.load(load_ex_mem),
+	.in(id_ex_src2_out),
+	.out(ex_mem_src2_out)
+);
+
+
+register #(.width(1)) ex_mem_v
+(
+	.clk,
+	.load(load_ex_mem),
+	.in(ex_mem_v_in),
+	.out(ex_mem_v_out)
+);
+
+//End Execute - Memory Pipe Components
+
+//Memory Stage Components
+assign mem_target = ex_mem_addr_out;
+assign mem_trap = d_mem_rdata;
+assign d_mem_wdata = write_DCacheritemux_out;
+
+assign d_mem_read = DCacheRmux_out;
+assign d_mem_write = write_DCachemux_out;
+
+always_comb
+begin
+	if((ex_mem_cs_out.OP_STI) &&(ldisticountererout == 2'b00))
+	begin
+		DCacheRmux_select = 1;
+		write_DCachemux_select = 1;
+	end
+	else
+	begin
+		DCacheRmux_select = 0;
+		write_DCachemux_select = 0;
+	end
+end
+
+assign d_mem_addr = DCacheaddrmux_out;
+assign d_mem_byte_enable[1] = WE1;
+assign d_mem_byte_enable[0] = WE0;
+
+assign DCache_enable = ex_mem_cs_out.DCache_enable & ex_mem_v_out;
+assign STALL_DCache = DCache_enable & !d_mem_response;
+logic [2:0] condition;
+
+always_comb
+begin
+	if_id_v_in = !TRUE_BR  & !flushpipe;
+	id_ex_v_in = !TRUE_BR & if_id_v_out & !flushpipe; 
+	mem_wb_v_in = 	!TRUE_BR & ex_mem_v_out;
+	if(if_id_ir_out == 16'b1110001000101111)
+		ex_mem_v_in = 0;
+	else
+		ex_mem_v_in = !TRUE_BR & id_ex_v_out  & !flushpipe;
+	condition = 3'b100;
+	
+	if(!idle_state && (mem_wb_cs_out.OPCode == op_str) && (if_id_ir_out == mem_wb_ir_out))
+	begin
+		mem_wb_v_in = 0;
+		ex_mem_v_in = 0;
+		id_ex_v_in = 0;
+		if_id_v_in = 1;
+		condition = 3'b001;
+	end
+	if(!idle_state && ex_mem_cs_out.registerload)
+	begin
+		mem_wb_v_in = 1;
+		ex_mem_v_in = 0;
+		id_ex_v_in = 0;
+		if_id_v_in = 0;
+		condition = 3'b000;
+	end
+	if(!idle_state && ex_mem_cs_out.OPBR && mem_wb_cs_out.registerload)
+	begin
+		mem_wb_v_in = 1;
+		ex_mem_v_in = 1;
+		id_ex_v_in = 0;
+		if_id_v_in = 0;
+		condition = 3'b010;
+	end
+	if(((mem_wb_src1_out == mem_wb_Destination_out)||(mem_wb_src2_out == mem_wb_Destination_out))&& (mem_wb_cs_out.registerload) && (!idle_state) && (mem_wb_cs_out.OPCode == op_add))
+	begin
+		if_id_v_in = 0;
+		id_ex_v_in = !TRUE_BR & if_id_v_out & !flushpipe; 
+		ex_mem_v_in = 0;
+		if(if_id_ir_out == 16'b0001100001100011)
+			mem_wb_v_in = 1;
+		else
+			mem_wb_v_in = 0;
+		
+		condition = 3'b011;
+	end
+	
+end
+
+assign uncond_or_trap = (((ex_mem_cs_out.OPUNCO) || (ex_mem_cs_out.OPTRAP)) && (!ex_mem_cs_out.OPJSR) && (!ex_mem_cs_out.OPJMP));
+assign jsr_taken = ex_mem_cs_out.OPJSR & ex_mem_v_out;
+assign trap_taken = uncond_or_trap & ex_mem_v_out;
+assign load_ldistireg = d_mem_response;
+
+
+twotoonemux #(.width(1)) DCacheRmux
+(
+	.select(DCacheRmux_select),
+	.a(ex_mem_cs_out.DCacheR),
+	.b(1'b1),
+	.o(DCacheRmux_out)
+);
+
+twotoonemux #(.width(1)) write_DCachemux
+(
+	.select(write_DCachemux_select),
+	.a(ex_mem_cs_out.write_DCache),
+	.b(1'b0),
+	.o(write_DCachemux_out)
+);
+
+/*Begin LDI logic*/
+always_comb
+begin
+	if((ldisticountererout == 2'b00) && (!d_mem_response))
+	begin
+		STALL_LDI = 0;
+		DCacheaddrmux_select = 0;
+	end
+	else if((ldisticountererout == 2'b00) && (d_mem_response)&&(ex_mem_cs_out.OP_LDI || ex_mem_cs_out.OP_STI))
+	begin
+		STALL_LDI = 1;
+		DCacheaddrmux_select = 0;
+	end
+		else if((ldisticountererout == 2'b01)&&(ex_mem_cs_out.OP_LDI || ex_mem_cs_out.OP_STI))
+	begin
+		STALL_LDI = 0;
+		DCacheaddrmux_select = 1;
+	end
+	else if((ldisticountererout == 2'b01)&&(ex_mem_cs_out.OP_LDI || ex_mem_cs_out.OP_STI)&&(d_mem_response))
+	begin
+		STALL_LDI = 0;
+		DCacheaddrmux_select = 0;
+	end
+	else if(ldisticountererout == 2'b10)
+	begin
+		STALL_LDI = 0;
+		DCacheaddrmux_select = 0;
+	end
+	else
+	begin
+		STALL_LDI = 0;
+		DCacheaddrmux_select = 0;
+	end
+end
+/*End LDI Stall Logic*/
+
+bitcounter ldisticounterer
+(
+	.clk,
+	.d_mem_response(d_mem_response),
+	.OP_LDI(ex_mem_cs_out.OP_LDI),
+	.OP_STI(ex_mem_cs_out.OP_STI),
+	.STALL_DCache(STALL_DCache),
+	.counter(ldisticountererout)
+);
+
+twotoonemux DCacheaddrmux
+(
+	.select(DCacheaddrmux_select),
+	.a(ex_mem_addr_out),
+	.b(ldistireg_out),
+	.o(DCacheaddrmux_out)
+);
+
+register ldistireg
+(
+	.clk,
+	.load(load_ldistireg),
+	.in(d_mem_rdata),
+	.out(ldistireg_out)
+);
+
+CondCodeComp CondCodeComp
+(
+	.a(ex_mem_cc_out),
+	.b(ex_mem_ir_out[11:9]),
+	.out(CondCodeComp_out)
+);
+
+CondCode wbCondCode
+(
+	.in(mem_wb_Aluresult_out),
+	.out(wbCondCode_out)
+);
+
+
+CondCodeComp wbCondCodeComp
+(
+	.a(wbCondCode_out),
+	.b(ex_mem_ir_out[11:9]),
+	.out(wbCondCodeComp_out)
+);
+
+always_comb
+begin
+	if(mem_wb_cs_out.LD_CC == 1)
+		CondCodeCompmux_select = 1;
+	else
+		CondCodeCompmux_select = 0;
+end
+
+twotoonemux #(.width(1)) CondCodeCompmux
+(
+	.select(CondCodeCompmux_select),
+	.a(CondCodeComp_out),
+	.b(wbCondCodeComp_out),
+	.o(CondCodeCompmux_out)
+);
+
+threeinAND br_and
+(
+	.a(ex_mem_v_out),
+	.b(ex_mem_cs_out.OPBR),
+	.c(CondCodeCompmux_out),
+	.o(TRUE_BR)
+);
+
+
+VALCHECK_MEM_WB VALCHECK_MEM_WB
+(
+	.ldi_cs(ex_mem_cs_out.OP_LDI),
+	.STALL_LDI(STALL_LDI),
+	.STALL_DCache(STALL_DCache),
+	.out(load_mem_wb)
+);
+
+BRMODS BRMODS
+(
+	.a(trap_taken),
+	.b(jsr_taken),
+	.c(TRUE_BR),
+	.d(ex_mem_cs_out.OPJMP),
+	.out(PCmux_select)
+);
+
+
+
+/*LDB*/
+zext #(.width(8)) HBzext
+(
+	.in(d_mem_rdata[15:8]),
+	.out(HBzext_out)
+);
+
+zext #(.width(8)) LBzext
+(
+	.in(d_mem_rdata[7:0]),
+	.out(LBzext_out)
+);
+
+
+
+twotoonemux DCachemux
+(
+	.select(ex_mem_addr_out[0]),
+	.a(LBzext_out),
+	.b(HBzext_out),
+	.o(DCachemux_out)
+
+);
+
+twotoonemux DCachetwotoonemux
+(
+	.select(ex_mem_cs_out.d_mem_byte_select),
+	.a(d_mem_rdata),
+	.b(DCachemux_out),
+	.o(DCachetwotoonemux_out)
+
+);
+/*STB*/
+
+ZEXTblock #(.width(8)) ZEXTblock
+(
+	.in(ex_mem_Aluresult_out[7:0]),
+	.ZEXTblockselect(ex_mem_addr_out[0]),
+	.out(ZEXTblock_out)
+);
+
+twotoonemux write_DCacheritemux
+(
+	.select(ex_mem_cs_out.OPSTB),
+	.a(ex_mem_Aluresult_out), //this is the case for sti as well
+	.b(ZEXTblock_out), //stb uses the bytebill though
+	.o(write_DCacheritemux_out)
+);
+
+twoinAND andWE0
+(
+	.a(ex_mem_cs_out.write_DCache),
+	.b(!ex_mem_addr_out[0]),
+	.o(andWE0_out)
+);
+
+twoinAND andWE1
+(
+	.a(ex_mem_cs_out.write_DCache),
+	.b(ex_mem_addr_out[0]),
+	.o(andWE1_out)
+);
+
+twoinAND andWE_select
+(
+	.a(ex_mem_cs_out.write_DCache),
+	.b(ex_mem_cs_out.OPSTB),
+	.o(andWE_select_out)
+);
+
+twotoonemux #(.width(1)) WE0mux
+(
+	.select(andWE_select_out),
+	.a(1'b1),
+	.b(andWE0_out),
+	.o(WE0)
+);
+
+twotoonemux #(.width(1)) WE1mux
+(
+	.select(andWE_select_out),
+	.a(1'b1),
+	.b(andWE1_out),
+	.o(WE1)
+);
+
+//End Memory Stage Components
+
+//Memory - Write Back Pipe Components
+register mem_wb_addr
+(
+	.clk,
+	.load(load_mem_wb),
+	.in(ex_mem_addr_out),
+	.out(mem_wb_addr_out)
+);
+
+register mem_wb_data
+(
+	.clk,
+	.load(load_mem_wb),
+	.in(DCachetwotoonemux_out),
+	.out(mem_wb_data_out)
+);
+
+contrsigreg mem_wb_cs
+(
+	.clk,
+	.load(load_mem_wb),
+	.in(ex_mem_cs_out),
+	.out(mem_wb_cs_out)
+);
+
+register mem_wb_PC
+(
+	.clk,
+	.load(load_mem_wb),
+	.in(ex_mem_PC_out),
+	.out(mem_wb_PC_out)
+);
+
+register mem_wb_Aluresult
+(
+	.clk,
+	.load(load_mem_wb),
+	.in(ex_mem_Aluresult_out),
+	.out(mem_wb_Aluresult_out)
+);
+
+register mem_wb_ir
+(
+	.clk,
+	.load(load_mem_wb),
+	.in(ex_mem_ir_out),
+	.out(mem_wb_ir_out)
+);
+
+register #(.width(3)) mem_wb_Destination
+(
+	.clk,
+	.load(load_mem_wb),
+	.in(ex_mem_Destination_out),
+	.out(mem_wb_Destination_out)
+);
+
+register #(.width(3)) mem_wb_src1
+(
+	.clk,
+	.load(load_mem_wb),
+	.in(ex_mem_src1_out),
+	.out(mem_wb_src1_out)
+);
+
+register #(.width(3)) mem_wb_src2
+(
+	.clk,
+	.load(load_mem_wb),
+	.in(ex_mem_src2_out),
+	.out(mem_wb_src2_out)
+);
+
+register #(.width(1)) mem_wb_v
+(
+	.clk,
+	.load(load_mem_wb),
+	.in(mem_wb_v_in),
+	.out(mem_wb_v_out)
+);
+//End memory - writeback pipe components
+
+//Writeback Stage components
+
+fourtoonemux wbmux
+(
+	.select(mem_wb_cs_out.wbmux_select),
+	.a(mem_wb_addr_out), //mem_wb_addr_out -- not REQ for cp1
+	.b(mem_wb_data_out),
+	.c(mem_wb_PC_out), 
+	.d(mem_wb_Aluresult_out),
+	.o(wbmux_out)
+);
+
+CondCode CondCode
+(
+	.in(wbmux_out),
+	.out(wb_cc_data)
+);
+
+	//Writeback load cc and load reg logic
+	twoinAND wb_LD_CC_and
+	(
+		.a(mem_wb_v_out),
+		.b(mem_wb_cs_out.LD_CC),
+		.o(wb_LD_CC)
+	);
+	
+	twoinAND wb_registerload_and
+	(
+		.a(mem_wb_v_out),
+		.b(mem_wb_cs_out.registerload),
+		.o(wb_registerload)
+	);
+	//End writeback load cc and load reg logic
+//End Writeback stage components
+endmodule
