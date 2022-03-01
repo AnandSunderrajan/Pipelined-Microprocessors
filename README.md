@@ -1,4 +1,6 @@
-# Pipelined-lc3b
+# Pipelined Microprocessors
 
-A pipelined version of the LC3-b microprocessor built as a final project for ECE385 @ UIUC. Currently in the process of adding additional features such as branch prediction, hazard detection, cache, etc.
- 
+1. A pipelined version of the LC3-b microprocessor with features such as cache, branch prediction, and hazard detection.
+
+
+2. A pipelined version of the RISC-V microprocessor based on the RV32I ISA with cache and hazard detection.
